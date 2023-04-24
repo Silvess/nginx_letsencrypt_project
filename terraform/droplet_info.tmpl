@@ -1,0 +1,6 @@
+Created droplet info:
+${ip_addr} ${passwd}
+FQDN:
+%{ for fqdn in fqdns ~}
+${fqdn}
+%{ endfor ~}

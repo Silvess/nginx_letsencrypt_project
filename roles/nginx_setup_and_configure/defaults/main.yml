@@ -1,0 +1,17 @@
+package_name: nginx
+add_index: true
+add_root: true
+#### nginx.conf ####
+worker_processes: auto
+worker_connections: 768
+keepalive_timeout: 60
+#### virtual hosts configuration ####
+virtual_hosts:
+  - listen: 80
+    server_name: example.com
+    index: index.html
+    index_template_path: index.html.j2
+    location: 
+      - name: '\'
+        content: "try_files $uri $uri/ =404;"
+sites_root: /var/www

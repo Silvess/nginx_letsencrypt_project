@@ -1,0 +1,234 @@
+---
+- name: Install prerequisites
+  ansible.builtin.apt:
+    name: python3-cryptography
+    update_cache: true
+    state: present
+
+- name: Create directories for certs and keys
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0710
+  with_items:
+    - "{{ private_key_dir }}"
+    - "{{ csr_dir }}"
+    - "{{ cert_dir }}"
+    - "{{ ssl_pass_dir }}"
+
+- name: Create directory for secrets on localhost
+  ansible.builtin.file:
+    path: "{{ local_secrets_dir }}"
+    state: directory
+  delegate_to: localhost
+
+- name: Create directory for acme challenges
+  ansible.builtin.file:
+    path: "{{ challenges_dir }}.well-known/acme-challenge"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: 0700
+
+- name: Generate Let's encrypt account key
+  community.crypto.openssl_privatekey:
+    path: "{{ private_key_dir }}letsencrypt_account.key"
+    passphrase: "{{ lookup('ansible.builtin.password', '{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key', seed=inventory_hostname) }}"
+    cipher: auto
+    force: true
+  no_log: true
+
+- name: Generate private keys
+  community.crypto.openssl_privatekey:
+    path: "{{ private_key_dir }}{{ item.server_name }}.key"
+    passphrase: "{{ lookup('ansible.builtin.password', '{{ local_secrets_dir }}{{ ansible_hostname }}-{{ item.server_name }}.key', seed=inventory_hostname) }}"
+    cipher: auto
+  loop: "{{ virtual_hosts }}"
+  no_log: true
+
+- name: Copy passphrases for private keys
+  ansible.builtin.copy:
+    src: "{{ local_secrets_dir }}{{ ansible_hostname }}-{{ item.server_name }}.key"
+    dest: "{{ ssl_pass_dir }}{{ item.server_name }}.pass"
+    owner: root
+    group: root
+    mode: '0400'
+  loop: "{{ virtual_hosts }}"
+  no_log: true
+
+- name: Generate CSR
+  community.crypto.openssl_csr:
+    path: "{{ csr_dir }}{{ item.server_name }}.csr"
+    privatekey_path: "{{ private_key_dir }}{{ item.server_name }}.key"
+    privatekey_passphrase: "{{lookup('ansible.builtin.file', '{{ local_secrets_dir }}{{ ansible_hostname }}-{{ item.server_name }}.key') }}"
+    common_name: "{{ item.server_name }}"
+  loop: "{{ virtual_hosts }}"
+
+- name: Create acme challenges for sites
+  community.crypto.acme_certificate:
+    account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
+    account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key') }}"
+    acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+    acme_version: 2
+    csr: "{{ csr_dir }}{{ item.server_name }}.csr"
+    dest: "{{ cert_dir}}{{ item.server_name }}.crt"
+    chain_dest: "{{ cert_dir }}{{ item.server_name }}-intermediate.crt"
+    fullchain_dest: "{{ cert_dir }}{{ item.server_name }}-fullchain.crt"
+    terms_agreed: true
+    deactivate_authzs: true
+    force: true
+  register: "acme_challenge"
+  loop: "{{ virtual_hosts }}"
+
+- name: Add acme challenge location to sites configuration
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/sites-available/{{ item.server_name }}.conf
+    insertbefore: 'location'
+    marker: "## {mark} acme_challenge ##"
+    block: |2
+        location /.well-known/acme-challenge/ {
+            alias {{ challenges_dir }}.well-known/acme-challenge/;
+            try_files $uri =404;
+        }
+  loop: "{{ virtual_hosts }}"
+  notify: Nginx reload
+
+- name: Copy challenges validation data
+  block:
+    - name: Copy challenge resource value to acme challenge path (one site configuration)
+      ansible.builtin.copy:
+        dest: "{{ challenges_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0]['value']['http-01']['resource'] }}"
+        content: "{{ (acme_challenge.results[0].challenge_data | dict2items)[0]['value']['http-01']['resource_value'] }}"
+        owner: www-data
+        group: www-data
+      when: (acme_challenge.results | length) == 1
+      notify: Nginx reload
+    
+    - name: Copy challenge resource value to acme challenge path (multiple sites configuration)
+      ansible.builtin.copy:
+        dest: "{{ challenges_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}"
+        content: "{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource_value'] }}"
+        owner: www-data
+        group: www-data
+      loop: "{{ acme_challenge.results }}"
+      when: (acme_challenge.results | length) > 1
+      notify: Nginx reload
+  when: acme_challenge is changed  
+  
+- name: Run handlers immediately
+  meta: flush_handlers
+
+- name: Validate challenges
+  block:    
+    - name: Validate challenge and retrieve certificates (one site configuration)
+      community.crypto.acme_certificate:
+        account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
+        account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key') }}"
+        acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+        acme_version: 2
+        csr: "{{ csr_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.csr"
+        dest: "{{ cert_dir}}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.crt"
+        chain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-intermediate.crt"
+        fullchain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-fullchain.crt"
+        terms_agreed: true
+        deactivate_authzs: true
+        data: "{{ item }}"
+      loop: "{{ acme_challenge.results }}"
+      when: (acme_challenge.results | length) > 1
+      notify: Nginx reload
+    
+    - name: Validate challenge and retrieve certificates (multiple sites configuration)
+      community.crypto.acme_certificate:
+        account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
+        account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key') }}"
+        acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+        acme_version: 2
+        csr: "{{ csr_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}.csr"
+        dest: "{{ cert_dir}}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}.crt"
+        chain_dest: "{{ cert_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}-intermediate.crt"
+        fullchain_dest: "{{ cert_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}-fullchain.crt"
+        terms_agreed: true
+        deactivate_authzs: true
+        data: "{{ acme_challenge.results[0] }}"
+      when: (acme_challenge.results | length) == 1
+      notify: Nginx reload
+  when: acme_challenge is changed
+
+- name: Replace listening port to 443
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/sites-available/{{ item.server_name }}.conf
+    regexp: 'listen '
+    line: '  listen 443 ssl;'
+  loop: "{{ virtual_hosts }}"
+  notify: Nginx reload
+
+- name: Add ssl related settings to sites configuration
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/sites-available/{{ item.server_name }}.conf
+    insertafter: 'server_name'
+    marker: "## {mark} ssl_conf ##"
+    block: |2
+        ssl_certificate     {{ cert_dir }}{{ item.server_name }}-fullchain.crt;
+        ssl_certificate_key {{ private_key_dir }}{{ item.server_name }}.key;
+        ssl_password_file   {{ ssl_pass_dir }}{{ item.server_name }}.pass;
+        ssl_protocols       TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+        ssl_ciphers         HIGH:!aNULL:!MD5;                     
+  loop: "{{ virtual_hosts }}"
+  notify: Nginx reload
+
+- name: Add redirect from listen port to 443
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/sites-available/{{ item.server_name }}.conf
+    insertbefore: 'BOF'
+    marker: "## {mark} ssl_redirect ##"
+    block: |
+      server {
+        listen       {{ item.listen}};
+        server_name  {{ item.server_name }};
+        return 301   https://{{ item.server_name }}$request_uri;
+      }
+  loop: "{{ virtual_hosts }}"
+  notify: Nginx reload
+  when: ssl_redirect == true
+
+- name: Configure automatic SSL certificates renewal
+  block:
+    - name: Install ansible
+      ansible.builtin.apt:
+        name: ansible
+        update_cache: true
+        state: present
+
+    - name: Install ansible collections
+      community.general.ansible_galaxy_install:
+        type: collection
+        name: community.crypto
+
+    - name: Copy passphrases for account key
+      ansible.builtin.copy:
+        src: "{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key"
+        dest: "{{ ssl_pass_dir }}letsencrypt-acc.pass"
+        owner: root
+        group: root
+        mode: '0400'
+      no_log: true
+
+    - name: Copy playbook to renew certificates
+      ansible.builtin.template:
+        src: ssl_renew.yml.j2
+        dest: /root/ssl_renew.yml
+        owner: root
+        group: root
+        mode: 0600
+
+    - name: Create cronjob for certificate renewal
+      ansible.builtin.cron:
+        name: "SSL certificate renew"
+        minute: "0"
+        hour: "1"
+        day: "1"
+        month: "*"
+        job: "ansible-playbook /root/ssl_renew.yml > /dev/null"
+  when: ssl_renew == true

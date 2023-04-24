@@ -1,0 +1,119 @@
+- name: Install Nginx 
+  hosts: localhost
+  connection: local
+
+  vars:
+    virtual_hosts:
+{% for vh in virtual_hosts %}
+      - listen: {{ vh.listen }}
+        server_name: {{ vh.server_name}}
+{% if vh.index is defined %}
+        index: {{ vh.index }}
+{% endif %}
+        location:
+{% for loc in vh.location %}
+          - name: {{ loc.name}}
+            content: {{ loc.content}}
+{% endfor %}
+{% endfor %}
+    sites_root: {{ sites_root }}
+    private_key_dir: {{ private_key_dir }}
+    cert_dir: {{ cert_dir }}
+    csr_dir: {{ csr_dir }}
+    challenges_dir: {{ challenges_dir }}
+    ssl_pass_dir: {{ ssl_pass_dir }}
+{% raw %}  
+  tasks:
+    - name: Generate Let's encrypt account key
+      community.crypto.openssl_privatekey:
+        path: "{{ private_key_dir }}letsencrypt_account.key"
+        passphrase: "{{ lookup('ansible.builtin.password', '{{ ssl_pass_dir }}letsencrypt-acc.pass') }}"
+        cipher: auto
+        force: true
+      no_log: true
+
+    - name: Create acme challenges for sites
+      community.crypto.acme_certificate:
+        account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
+        account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ ssl_pass_dir }}letsencrypt-acc.pass') }}"
+        acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+        acme_version: 2
+        csr: "{{ csr_dir }}{{ item.server_name }}.csr"
+        dest: "{{ cert_dir}}{{ item.server_name }}.crt"
+        chain_dest: "{{ cert_dir }}{{ item.server_name }}-intermediate.crt"
+        fullchain_dest: "{{ cert_dir }}{{ item.server_name }}-fullchain.crt"
+        terms_agreed: true
+        force: true
+        deactivate_authzs: true
+      register: "acme_challenge"
+      loop: "{{ virtual_hosts }}"
+
+    - name: Copy validation data
+      block:    
+        - name: Copy challenge resource value to acme challenge path (one site configuration)
+          ansible.builtin.copy:
+            dest: "{{ challenges_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0]['value']['http-01']['resource'] }}"
+            content: "{{ (acme_challenge.results[0].challenge_data | dict2items)[0]['value']['http-01']['resource_value'] }}"
+            owner: www-data
+            group: www-data
+          when: (acme_challenge.results | length) == 1
+          notify: Nginx reload
+        
+        - name: Copy challenge resource value to acme challenge path (multiple sites configuration)
+          ansible.builtin.copy:
+            dest: "{{ challenges_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}"
+            content: "{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource_value'] }}"
+            owner: www-data
+            group: www-data
+          loop: "{{ acme_challenge.results }}"
+          when: (acme_challenge.results | length) > 1
+          notify: Nginx reload
+      when: acme_challenge is changed
+
+    - name: Run handlers immediately
+      meta: flush_handlers
+
+    - name: Validate acme challenge data
+      block:        
+        - name: Validate challenge and retrieve certificates (multiple site configuration)
+          community.crypto.acme_certificate:
+            account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
+            account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ ssl_pass_dir }}letsencrypt-acc.pass') }}"
+            acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+            acme_version: 2
+            csr: "{{ csr_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.csr"
+            dest: "{{ cert_dir}}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.crt"
+            chain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-intermediate.crt"
+            fullchain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-fullchain.crt"
+            terms_agreed: true
+            force: true
+            deactivate_authzs: true
+            data: "{{ item }}"
+          loop: "{{ acme_challenge.results }}"
+          when: (acme_challenge.results | length) > 1
+          notify: Nginx reload
+        
+        - name: Validate challenge and retrieve certificates (one site configuration)
+          community.crypto.acme_certificate:
+            account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
+            account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ ssl_pass_dir }}letsencrypt-acc.pass') }}"
+            acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+            acme_version: 2
+            csr: "{{ csr_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}.csr"
+            dest: "{{ cert_dir}}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}.crt"
+            chain_dest: "{{ cert_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}-intermediate.crt"
+            fullchain_dest: "{{ cert_dir }}{{ (acme_challenge.results[0].challenge_data | dict2items)[0].key }}-fullchain.crt"
+            terms_agreed: true
+            deactivate_authzs: true
+            force: true
+            data: "{{ acme_challenge.results[0] }}"
+          when: (acme_challenge.results | length) == 1
+          notify: Nginx reload
+      when: acme_challenge is changed
+
+  handlers:
+    - name: Nginx reload
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+ {% endraw %} 

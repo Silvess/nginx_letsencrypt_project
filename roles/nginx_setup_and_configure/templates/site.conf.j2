@@ -1,0 +1,22 @@
+server {
+  listen {{ item.listen }};
+  server_name {{ item.server_name }};
+
+  root {{ sites_root }}/{{ item.server_name}};
+
+{% if item.index is defined %}
+  index {{ item.index }};
+{% endif %}
+
+{% if item.location is defined %}
+{% for location in item.location %}
+  location {{ location.name }} {
+    {{ location.content }}
+  }
+{% endfor %}
+{% endif %}
+
+  access_log /var/log/nginx/{{ item.server_name }}_access.log;
+  error_log /var/log/nginx/{{ item.server_name }}_error.log error;
+
+}

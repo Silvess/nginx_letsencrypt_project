@@ -1,0 +1,14 @@
+do_token = 
+aws_access_key = 
+aws_secret_key = 
+rebrain_ssh_public_key = []
+task_name = 
+user_name =
+user_email = 
+module = 
+user_public_key_path = 
+user_private_key_path =
+droplet_name =
+aws_region = 
+rebrain_zone_name = 
+dns_names = []

@@ -1,0 +1,7 @@
+---
+- name: Install Nginx 
+  hosts: all
+
+  roles:
+    - { role: nginx_setup_and_configure, tags: 'setup' }
+    - { role: nginx_ssl_config, tags: 'ssl' }
