@@ -122,16 +122,16 @@
 
 - name: Validate challenges
   block:    
-    - name: Validate challenge and retrieve certificates (one site configuration)
+    - name: Validate challenge and retrieve certificates (multiple sites configuration)
       community.crypto.acme_certificate:
         account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
         account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key') }}"
         acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
         acme_version: 2
-        csr: "{{ csr_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.csr"
-        dest: "{{ cert_dir}}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.crt"
-        chain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-intermediate.crt"
-        fullchain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-fullchain.crt"
+        csr: "{{ csr_dir }}{{ (item.challenge_data | dict2items)[0].key }}.csr"
+        dest: "{{ cert_dir}}{{ (item.challenge_data | dict2items)[0].key }}.crt"
+        chain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0].key }}-intermediate.crt"
+        fullchain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0].key }}-fullchain.crt"
         terms_agreed: true
         deactivate_authzs: true
         data: "{{ item }}"
@@ -139,7 +139,7 @@
       when: (acme_challenge.results | length) > 1
       notify: Nginx reload
     
-    - name: Validate challenge and retrieve certificates (multiple sites configuration)
+    - name: Validate challenge and retrieve certificates (one site configuration)
       community.crypto.acme_certificate:
         account_key_src: "{{ private_key_dir }}letsencrypt_account.key"
         account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ local_secrets_dir }}{{ ansible_hostname }}-acc.key') }}"
@@ -226,9 +226,10 @@
     - name: Create cronjob for certificate renewal
       ansible.builtin.cron:
         name: "SSL certificate renew"
-        minute: "0"
-        hour: "1"
-        day: "1"
-        month: "*"
+        minute: "{{ renew_minute }}"
+        hour: "{{ renew_hour }}"
+        day: "{{ renew_day }}"
+        weekday: "{{ renew_weekday }}"
+        month: "{{ renew_month }}"
         job: "ansible-playbook /root/ssl_renew.yml > /dev/null"
   when: ssl_renew == true

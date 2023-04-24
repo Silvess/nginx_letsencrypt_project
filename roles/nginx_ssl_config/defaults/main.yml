@@ -16,4 +16,10 @@ local_secrets_dir: ./secrets/
 challenges_dir: /var/www/challenges/
 ssl_pass_dir: /etc/nginx/ssl_pass/
 ssl_redirect: true
+#### ssl renew ####
 ssl_renew: true
+renew_minute: "0"
+renew_hour: "1"
+renew_day: "1"
+renew_weekday: "*"
+renew_month: "*"

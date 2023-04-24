@@ -81,10 +81,10 @@
             account_key_passphrase: "{{ lookup('ansible.builtin.file', '{{ ssl_pass_dir }}letsencrypt-acc.pass') }}"
             acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
             acme_version: 2
-            csr: "{{ csr_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.csr"
-            dest: "{{ cert_dir}}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}.crt"
-            chain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-intermediate.crt"
-            fullchain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0]['value']['http-01']['resource'] }}-fullchain.crt"
+            csr: "{{ csr_dir }}{{ (item.challenge_data | dict2items)[0].key }}.csr"
+            dest: "{{ cert_dir}}{{ (item.challenge_data | dict2items)[0].key }}.crt"
+            chain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0].key }}-intermediate.crt"
+            fullchain_dest: "{{ cert_dir }}{{ (item.challenge_data | dict2items)[0].key }}-fullchain.crt"
             terms_agreed: true
             force: true
             deactivate_authzs: true
